@@ -1,3 +1,2 @@
 # Machine-Learning
-Using Machine Learning Models to Predict Customer Churn in Telecommunications
 The aim of this project is to build a machine learning model to predict whether or not a customer is likely to cancel their subscription to a telecommunications service, which is so-called "churn." I will be using a dataset from Kaggle and will implement various techniques to identify the hidden patterns that may lead a user to hit that "cancel" button. 
