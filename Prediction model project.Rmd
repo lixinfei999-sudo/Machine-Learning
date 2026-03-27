@@ -1,0 +1,706 @@
+---
+title: "Telecommunication Customer Churn Prediction"
+author: "Mia Li"
+date: "UCSB Winter 2026"
+output:
+  html_document:
+    toc: yes
+    toc_float: true
+    df_print: paged
+    code_folding: hide
+    theme: united
+subtitle: Using Machine Learning Models to Predict Customer Churn in Telecommunications
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(tidyverse)
+library(janitor)
+library(dplyr)
+library(corrplot)
+library(discrim)
+library(glmnet)
+library(ranger)
+library(kknn)
+library(rpart)
+library(MASS)
+```
+
+# Introduction
+
+The aim of this project is to build a machine learning model to predict whether or not a customer is likely to cancel their subscription to a telecommunications service, which is so-called "churn." I will be using a dataset from Kaggle and will implement various techniques to identify the hidden patterns that may lead a user to hit that "cancel" button. 
+
+![](/Users/User/OneDrive/Desktop/Final Project/Images/Customer-Churn.png)
+
+
+## Why Does Churn Matter?
+
+You might ask, why do we spend so much time figuring out why people cancel their phone plans? This leads to the importance of customer churn. I bet most of us have experienced being overwhelmed by customer service calls, or staring at a suddenly increased phone bill and wondering if we should switch carriers. However, for many large companies, acquiring a new customer is far more expensive than retaining an existing one. Therefore, if businesses can use data analytics to identify/predict which users are about to churn—for example, those with restrictive monthly contracts or those not enrolled in technical support—they can offer discounts or better plans to retain customers before they choose to cancel, thus saving costs.
+
+![](/Users/User/OneDrive/Desktop/Final Project/Images/Customer-churn.webp)
+
+
+In fact, as a student with limited money in the pocket, I often find myself caught in this "price game." I constantly evaluate whether my current subscription is truly worth the increased monthly expense, and I compare prices from different providers when my subscription is about to expire, hoping to find a better deal. Data analysis can be a crucial component of modern business operations, and frankly, understanding data can help us understand human behavior in the real world.
+
+## Data Description
+
+The data for this project comes from a publicly available dataset on Kaggle, posted by user BlastChar and provided by IBM. This dataset is part of IBM Sample Data Sets. It collects the digital habits and account details of over 7,000 users of a telecommunications company, including customers who left within the last month, the services each customer has signed up for, customer account information, and demographic information about customers.
+
+
+Citation: IBM Sample Data Sets. (2018). [Telco Customer Churn: Focused customer retention programs. Kaggle.](https://www.kaggle.com/datasets/blastchar/telco-customer-churn)
+
+
+This dataset is essentially a large spreadsheet, with each row representing a customer. It contains 21 columns, each containing the customer's attributes as described in the column metadata. We have demographic data (gender, seniority, whether they have a partner or dependents), service data (whether they have registered for telephone service, multi-line services, or internet value-added services), and account data (customer renewal duration, contract type, and monthly billing). And then there's our most important column, "Churn." It only has two values, "Yes" or "No," primarily indicating whether a customer has churned in the past month. However, most of the data in this dataset is categorical, so a significant part of the initial work was translating this data into a language our model could understand.
+
+![](/Users/User/OneDrive/Desktop/Final Project/Images/19b64a82-413d-4cdd-82d0-d48cebc95e93_Active+and+passive+churn.avif)
+
+
+## Project Outline
+
+Now that we understand the background and purpose of the data, how do we begin building this project? Here's an overview of the project workflow: First, I'll perform some data cleaning, mainly handling missing/mismatched values and ensuring all variables are ready for analysis. Next, I'll conduct exploratory data analysis (EDA), creating charts to see if we can find "conclusive evidence" of user churn. Once the data looks promising, I'll start setting up the model. I'll split the dataset into training and test sets to prevent the model from "cheating" by seeing the answers prematurely. I'll set up a 10-fold cross-validation to ensure the results aren't accidental. I'll test several different models, including logistic regression, decision trees, random forests, etc., to see which model is best at identifying "high-risk" customers. Finally, I'll test the winning model on data that hasn't appeared before (which I'll collect elsewhere) to see if it can truly predict real-world customer churn! With that said, let's begin.
+
+
+# Exploratory Data Analysis (EDA)
+
+Before diving into complex machine learning models, our first task is to understand what kind of data we're actually dealing with. Raw data is rarely ready to be used immediately. It's usually messy, with incorrectly formatted variables or missing data, all of which can affect our work later on. So, in this section, I'll perform data preprocessing, which includes loading the dataset, checking its size, and doing some simple "cleaning." These are all necessary to keep things organized and ready for analysis.
+
+
+## Loading and Exploring Raw Data
+
+First things first, let's get the data into the environment.
+```{r}
+# Reading the data
+churn_data <- read_csv("Customer Churn Dataset.csv")
+
+# Let's take a look at the dimensions
+dim(churn_data)
+```
+
+
+Like I said before, we have 7,043 observations and 21 variables. That’s a solid amount of data, it's large enough to train a reliable model, but small enough that my laptop won't catch fire while running it. Now, let’s take a quick peek at the first few rows to see what the columns actually look like.
+```{r}
+churn_data %>% head()
+```
+
+
+One thing that immediately jumps out is that `customerID` is just a unique string for each person. While it's useful for the company's database, it doesn't actually tell us anything about why a customer would stay or leave, so I’ll probably ditch that in a second.
+
+
+## Tidying the Data
+
+When I downloaded this dataset from Kaggle, I didn't notice whether it contained missing data; I only noticed mismatched data. However, to be on the safe side, we still need to check the entire dataset for any missing values, as retaining missing data can introduce significant bias, distort the estimation results, and reduce the accuracy of the analysis. 
+```{r}
+# Checking for NAs (missing data)
+sum(is.na(churn_data))
+```
+
+
+Whew! That was close! It turns out this dataset did indeed contain missing data! Upon inspection, we found 11 missing values. 
+
+
+Also, several variables that are currently characters (like "Yes" or "No") really need to be treated as factors so the model can handle them correctly; as I mentioned, these characters are currently in a mismatch state.
+```{r}
+# Cleaning: Remove customerID, drop the few NAs, and fix factor variables
+churn_data <- churn_data %>%
+  dplyr::select(-customerID) %>%
+  drop_na() %>%
+  mutate(across(where(is.character), as.factor))
+
+# Double check dimensions after cleaning
+dim(churn_data)
+```
+
+
+By discarding the 11 rows of missing value, we now have 7,032 rows left, still a negligible loss for a clean dataset. I also converted all text columns to factors. Specifically, I wanted to ensure our response variable, "Churn," was ready for further processing.
+
+
+## Codebook: Describing the Predictors
+
+Now that we’ve trimmed the fat, let’s look at the predictors I’ll be using to predict our response variable. Here is a breakdown of what everything means:
+
+  - `customerID`: This is the column I just removed. As I mentioned before, it's just a unique string for each person. So it won't be involved in our subsequent work, and our number of columns will change from 21 to 20, number of predictors change from 20 to 19.
+  
+  - `gender`: Whether the customer is male or female.
+  
+  - `SeniorCitizen`: Whether the customer is a senior citizen or not (1, 0).
+  
+  - `Partner`: Whether the customer has a partner or not (Yes, No).
+  
+  - `Dependents`: Whether the customer has dependents or not (Yes, No).
+  
+  - `tenure`: Number of months the customer has stayed with the company.
+  
+  - `PhoneService`: Whether the customer has a phone service or not (Yes, No).
+  
+  - `MultipleLines`: Whether the customer has multiple lines or not (Yes, No, No phone service).
+  
+  - `InternetService`: Customer’s internet service provider (DSL, Fiber optic, No).
+  
+  - `OnlineSecurity`: Whether the customer has online security or not (Yes, No, No internet service).
+  
+  - `OnlineBackup`: Whether the customer has online backup or not (Yes, No, No internet service).
+  
+  - `DeviceProtection`: Whether the customer has device protection or not (Yes, No, No internet service).
+  
+  - `TechSupport`: Whether the customer has tech support or not (Yes, No, No internet service).
+  
+  - `StreamingTV`: Whether the customer has streaming TV or not (Yes, No, No internet service).
+  
+  - `StreamingMovies`: Whether the customer has streaming movies or not (Yes, No, No internet service).
+  
+  - `Contract`: The contract term of the customer (Month-to-month, One year, Two year).
+  
+  - `PaperlessBilling`: Whether the customer has paperless billing or not (Yes, No).
+  
+  - `PaymentMethod`: The customer’s payment method (Electronic check, Mailed check, Bank transfer (automatic), Credit card (automatic)). 
+  
+  - `MonthlyCharges`: The amount charged to the customer monthly.
+  
+  - `TotalCharges`: The total amount charged to the customer.
+  
+  - `Churn`: Whether the customer churned or not (Yes or No). This is not a predictor variable, but a response variable. I put the description here just in case.
+
+
+## Visual EDA
+
+Now that the data has been cleaned and the variables defined, it's time to get to the fun part: visualization. Before building the model, we need to understand the actual situation regarding customer churn. For example, do long-term customers really mean higher loyalty? Do high bills really lead to customer churn? Let's find out. Furthermore, for ease of understanding, I will use a consistent color scheme: blue to represent retained customers and red for churned customers.
+
+
+### Churn Distribution
+
+First, I want to see just how many people are actually leaving. This is my response variable, `Churn`.
+```{r}
+# Bar plot of the response variable
+ggplot(churn_data, aes(x = Churn, fill = Churn)) +
+  geom_bar() +
+  scale_fill_manual(values = c("royalblue4", "red3")) +
+  labs(title = "Distribution of Customer Churn", 
+       x = "Did the Customer Churn?", 
+       y = "Number of Customers")
+
+# Percentage of churn
+churn_pct <- churn_data %>%
+  group_by(Churn) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = (count / sum(count)) * 100)
+
+print(churn_pct)
+```
+
+
+Looking at this plot, it’s clear we have a bit of a "Class Imbalance" problem. Most customers(73.4%) stayed with the company. While that's great for the business, it means my model has to be extra smart to find the 26.6% of people who actually left. If I just guessed "No" for everyone, I'd be 73.4% accurate, but I'd be a terrible data scientist!
+
+
+### Variable Correlation Plot
+
+Before I get too deep into the individual variables, I want to see how the numerical predictors: Tenure, Monthly Charges, and Total Charges, interact with each other. To do this, I’ll create a correlation heat map.
+```{r}
+# Selecting only numeric variables
+numeric_data <- churn_data %>% 
+  dplyr::select(tenure, MonthlyCharges, TotalCharges)
+
+# Calculating correlation and plotting
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+corrplot(cor_matrix, method = "color", order = "AOE", addCoef.col = "black", tl.col = "black", cl.pos = "r")
+```
+
+
+Looking at the map, there is a massive positive correlation (0.83) between `tenure` and `TotalCharges`. This makes total sense, because the longer you stay, the more money you've handed over to the company. However, for my machine learning model, this is a bit of a red flag called Multicollinearity. If two variables tell almost the same story, keeping both might actually confuse the model. I’ll likely keep `tenure` and `MonthlyCharges` as my main drivers since `TotalCharges` is essentially just a product of those two.
+
+
+### Contract Type
+
+In the telecom world, we often suspect that people on month-to-month contracts are much more likely to leave because they aren't "locked in." Let's see if the data backs that up.
+```{r}
+# Churn by Contract Type
+ggplot(churn_data, aes(x = Contract, fill = Churn)) +
+  geom_bar(position = "fill") +
+  scale_fill_manual(values = c("royalblue4", "red3")) +
+  labs(title = "Churn Rate by Contract Type", 
+       x = "Contract Type", 
+       y = "Proportion of Customers")
+```
+
+
+Wow, the difference here is massive. If you're on a Month-to-month contract, you're significantly more likely to churn compared to those on one or two-year contracts. It seems like the "long-term commitment" really does act as an anchor. For a business analyst, this is a huge insight: maybe the goal shouldn't just be "don't let them leave," but rather "get them on a longer contract."
+
+### Monthly Charges and Churn
+
+We talked about contracts, but what about the actual price? I’ll use a Boxplot here to see if people who churn are actually paying more on average than those who stay.
+```{r}
+# Boxplot of Monthly Charges vs Churn
+ggplot(churn_data, aes(x = Churn, y = MonthlyCharges, fill = Churn)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("royalblue4", "red3")) +
+  labs(title = "Monthly Charges vs. Churn Status", 
+       x = "Did they Churn?", 
+       y = "Monthly Charges ($)")
+```
+
+
+Just as I expected! The median monthly charge for customers who churned (the red box) is significantly higher than for those who stayed. Actually, if you look at the "No" group, their charges are spread out all over the place, but the "Yes" group is heavily concentrated at the higher end. This suggests that price sensitivity is a real thing, once that monthly bill hits a certain threshold, people start looking for the exit.
+
+
+### Tenure and Contract
+
+Finally, let's combine a few things. I want to see the distribution of Tenure across different Contract types, colored by Churn. This is a "Three-variable" plot that really shows the "Loyalty Gap."
+```{r}
+# Boxplot of Tenure by Contract and Churn
+ggplot(churn_data, aes(x = Contract, y = tenure, fill = Churn)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("royalblue4", "red3")) +
+  labs(title = "Tenure Distribution by Contract and Churn", 
+       x = "Contract Type", 
+       y = "Tenure (Months)")
+```
+
+
+Looking at this plot, the relationship between how long someone stays and their contract type is even more interesting than I first thought:
+
+  - Month-to-month: For the customers on month-to-month plans, the "Churn" group (Red) has a significantly lower median tenure(around 10 months or less) compared to the "No Churn" group (Blue). It's pretty clear that if a month-to-month customer is going to leave, they’re going to do it fast.
+  
+  - One-year & Two-year: This is where it gets surprising. For the longer-term contracts, the median tenure for people who churned is actually higher than for those who stayed. If you look at the Two-year contract, you can also see that the red box sits slightly higher than the blue one!
+  
+  - The "End of Contract" Effect: What this tells me is that for these long-term users, "churning" isn't a snap decision. They aren't leaving because of a bad week; they are likely staying for the duration of their 12 or 24-month commitment and then choosing not to renew.
+
+It’s almost like there are two different types of churners: the "Fast Leavers" on month-to-month plans who quit almost immediately, and the "Contract Finishers" who stay for two years and then finally walk away. 
+
+
+# Setting Up Models
+
+Now that our exploratory data analysis (EDA) "reconnaissance" is complete, we've reviewed numerous plots and believe we have a clearer understanding of why customers churn. So, it's time to move from "looking" to "building." We have gained a general understanding of which variables are important in previous sections. In this section, we will prepare the data and set up the formal machine learning framework.
+
+
+## Train/Test Split
+
+Before officially building the model, we must follow the golden rule of machine learning: never let the model see the final test questions, ensuring it's learning and not "cheating." To this end, I'll split the data into training and test sets. I'm also using stratified sampling for the `Churn` variable. Since we know only about 26.6% of users churn, we want to ensure both the training and test sets have the same 26.6% churn rate. I've also set a "seed" to ensure the exact same dataset split every time this code is run. 
+```{r}
+set.seed(123) # Setting a seed for reproducibility
+churn_split <- initial_split(churn_data, prop = 0.80, strata = Churn)
+
+churn_train <- training(churn_split)
+churn_test <- testing(churn_split)
+
+# Checking the dimensions
+dim(churn_train)
+dim(churn_test)
+```
+
+
+I’ve decided on an 80/20 split, which gives our models plenty of data to learn from (about 5,625 observations) while keeping a solid "vault" of 1,407 observations to test on at the very end.
+
+
+## Building Recipe
+
+If this project was a cooking show, the recipe would be our prep station. This is where we tell R exactly how to handle our variables before they go into the "oven" (the model).
+
+
+Think of the recipe as the instructions for a standardized experience. For example, some people pay $20 a month, while others may pay $100. To the model, $100 definitely looks "bigger" and therefore, more important, but that's not necessarily true. By centering and scaling, we are able to put all of the numbers on the same playing field, avoiding the model from getting biased. I’m also creating dummy variables for our categorical predictors (like `Gender` or `Contract Type`). Computers can’t read the word "Fiber optic," but they can understand a 0 or a 1!
+
+```{r}
+churn_recipe <- recipe(Churn ~ ., data = churn_train) %>%
+  step_dummy(all_nominal_predictors()) %>% # Turn categories into numbers
+  step_zv(all_predictors()) %>% # Removes variables with zero variance
+  step_corr(all_predictors(), threshold = 0.9) %>% # Removes highly correlated variables
+  step_center(all_predictors()) %>% # Standardizing our predictors
+  step_scale(all_predictors()) %>%
+  step_nzv(all_predictors()) # Remove variables with "Near Zero Variance" (noise)
+
+churn_recipe
+```
+
+
+By the way, I’m including almost all the predictors we discussed, but I’m leaving out `customerID` because, like I said earlier, a random string of numbers shouldn't be the reason someone cancels their phone plan!
+
+
+## K-Fold Cross Validation
+
+To make sure our model isn't just "getting lucky" on one specific version of the data, I’m implementing 10-fold Cross-Validation. Again, I’m stratifying this on Churn to keep our proportions consistent across every single fold.
+```{r}
+churn_folds <- vfold_cv(churn_train, v = 10, strata = Churn)
+```
+
+
+Building these models can be a bit of a workout for my laptop’s processor, so I’m saving all this hard work into an .rda file. This way, if my RStudio crashes or I need to take a break, I can just load everything back in without having to start from scratch.
+```{r}
+save(churn_folds, churn_recipe, churn_train, churn_test, file = "/Users/User/OneDrive/Desktop/Final Project/RDA/Churn_Setup.rda")
+```
+
+
+# Building Models
+
+With everything prepared, we've finally arrived at the core of the project: the actual model building. Since our primary goal is to predict a binary outcome, the prediction of whether a customer will stay or leave, I decided to test various classification techniques. I needed to know which algorithm best handled the complexity of our data. 
+
+
+## Selecting the Right Models
+
+To maximize the success rate and accuracy of this project, I decided to fit seven different models. This range allowed me to start with a simple baseline model and gradually transition to more complex, higher-performance algorithms.
+
+  - Logistic Regression: My baseline model for binary classification.
+  
+  - Linear Discriminant Analysis (LDA): To see if a linear combination of predictors can separate the classes.
+  
+  - Quadratic Discriminant Analysis (QDA): A more flexible version of LDA that doesn't assume equal variance.
+  
+  - Lasso Regression: To perform variable selection and prevent overfitting by penalizing less useful predictors.
+  
+  - Decision Tree: To create an interpretable "flowchart" of why customers leave.
+  
+  - Random Forest: An ensemble method that I expect to be quite powerful for this dataset.
+  
+  - K-Nearest Neighbors (KNN): To classify customers based on the "similarity" of their profiles to others.
+  
+
+## Performance Metric: ROC AUC
+
+Furthermore, before delving into the results, we need to determine how to define "success." While model accuracy is easy to understand, it can be highly misleading when the data is imbalanced, for example, in our case, the churn rate is only around 27%. If I simply predict that no customers will churn, my accuracy would be 73%, which isn't low, but it's meaningless; none of the data is useful.
+
+
+
+Therefore, to ensure our model is both accurate and meaningful, I chose to use ROC AUC (Area Under the Receiver Operating Characteristic) as the primary metric for evaluating model performance.
+
+![](/Users/User/OneDrive/Desktop/Final Project/Images/roc-curve-original.webp)
+
+
+Essentially, ROC measures the model's ability to distinguish between the two classes across all possible thresholds. A score of 0.5 is no better than a coin flip, while a 1.0 is a perfect classifier. It gives us a much more honest look at how well the model actually understands the difference between a loyal customer and a churn risk.
+
+
+## The Model Building Workflow
+
+For almost every model listed above, I followed a structured, seven-step workflow. This consistency ensures that the comparison between a simple Logistic Regression and a complex Random Forest is fair and rigorous.
+
+1. Set up the model by specifying the model type, setting its engine, and ensuring the mode is set to ‘classification’.
+
+2. Set up the workflow by bundling the new model specification with the established churn_recipe.
+
+3. (For the simple models like Logistic Regression, LDA, and QDA, I will skip directly to step 6.)
+
+4. Set up a tuning grid with the specific hyperparameters I want to optimize, choosing reasonable ranges for each.
+
+5. Tune the model using the 10-fold cross-validation folds I created earlier to find the best settings.
+
+6. Finalize the workflow by selecting the most accurate parameter combinations and locking them in.
+
+7. Fit the model to the full training dataset and save the results to an RDA file so they are ready for the final evaluation.
+
+By following this rigorous process, I hope to find the "sweet spot" where the model is complex enough to capture churn patterns but simple enough to remain reliable on new, unseen data. Let’s see what the data tells us!
+
+
+# Model Results
+My Laptop felt like it had been running for a very long time, especially when running the more complex models (particularly decision tree and random forest), it felt like an eternity. But now, we finally have all the results for the seven models, which are all stored in .rda files. So without further ado, let's load them in and see which algorithm is the "MVP" (Minimum Viable Product) for customer churn prediction.
+```{r}
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/Churn_Setup.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_log_reg.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_lda.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_qda.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_lasso.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_decision_tree.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_random_forest.rda")
+load("/Users/User/OneDrive/Desktop/Final Project/RDA/churn_knn.rda")
+```
+
+
+## Visualization
+
+One of the coolest ways to see what happened during the "tuning" phase is using the autoplot() function. It shows us exactly how the different hyperparameters we picked (like the depth of a tree or the number of neighbors) actually affected our ROC AUC score.
+
+
+### Decision Tree
+
+For our Decision Tree, we tuned the cost complexity, tree depth, and the minimum number of points required for a node split.
+```{r}
+autoplot(churn_dt_tune)
+```
+
+Looking at the Decision Tree plot, we can see exactly how the model's performance reacts to different levels of complexity.
+
+  - Tree Depth: The different colored lines represent the depth of the tree. Interestingly, the orange line (depth 1) is a flat line at the bottom, meaning a tree with only one split is way too simple to catch churn patterns—it's basically guessing. The green and blue lines (depths 11 and 15) are much higher, but they are almost overlapping, which tells me that after a depth of about 10, adding more layers doesn't actually help the model anymore.
+  
+  - Cost Complexity: As the cost complexity (on the x-axis) increases, the ROC AUC stays stable for a while and then plummets for the deeper trees. This is a classic sign of the model becoming "too lazy" to split further because the penalty is too high. Our "sweet spot" is clearly on the left side of the graph where the penalty is low and the tree depth is around 10.
+
+### Random Forest
+
+In the Random Forest model, we tuned three key "knobs": mtry (how many predictors each tree sees), trees (how many trees are in the forest), and min_n (minimum node size).
+```{r}
+autoplot(churn_rf_tune)
+```
+
+
+Looking at the autoplot for our Random Forest, we can see a much more "healthy" behavior in the parameters:
+
+  - mtry (Predictors): By focusing on a range between 1 and 5, we found the sweet spot. The ROC AUC is highest when mtry is around 2 or 3. This confirms that forcing the trees to look at smaller subsets of variables actually helps the overall ensemble learn better patterns without getting fixated on just the most obvious predictors.
+  
+  - Trees: There is a clear upward trend as the number of trees increases from 100 toward 500. More trees lead to more stability in the "vote," which smoothed out the noise and pushed our ROC AUC higher.
+  
+  - min_n (Node Size): The model seems to prefer a moderate min_n. This means it doesn't want the trees to be so specific that they only have 1 or 2 data points at the end (overfitting), but it also doesn't want them to be too generic.
+
+
+### K-Nearest Neighbors (KNN)
+
+KNN is all about "similarity." The parameter we tuned was the number of neighbors.
+```{r}
+autoplot(churn_knn_tune)
+```
+
+The KNN plot is a lot more straightforward. We see a steady climb in performance as the number of Neighbors increases. In a "noisy" real-world dataset like customer churn, looking at just 1 or 5 neighbors isn't enough—the model gets distracted by individual outliers. By expanding the neighborhood (increasing $K$), the model averages out the noise and gets a much more stable and accurate "vote" on whether a customer is likely to stay or go.
+
+
+## Comparing Model Accuracy
+
+Now that we’ve gathered the results from all seven models, I’ve compiled them into a summary table. As a reminder, we are using the ROC AUC (or RAS) as our "gold standard" because it accounts for the class imbalance in our churn data.
+```{r}
+# Extracting estimates for all models
+churn_log_reg_auc <- augment(churn_log_reg_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_lda_auc <- augment(churn_lda_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_qda_auc <- augment(churn_qda_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_lasso_auc <- augment(churn_lasso_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_dt_auc <- augment(churn_dt_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_rf_auc <- augment(churn_rf_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+churn_knn_auc <- augment(churn_knn_fit, new_data = churn_train) %>%
+  roc_auc(Churn, .pred_No) %>% 
+  dplyr::select(.estimate)
+
+# Combining results
+churn_roc_aucs <- c(churn_log_reg_auc$.estimate, churn_lda_auc$.estimate,
+                    churn_qda_auc$.estimate, churn_lasso_auc$.estimate,
+                    churn_dt_auc$.estimate, churn_rf_auc$.estimate,
+                    churn_knn_auc$.estimate)
+
+churn_mod_names <- c("Logistic Regression", "LDA", "QDA", "Lasso", 
+                     "Decision Tree", "Random Forest", "K-Nearest Neighbor")
+
+churn_results <- tibble(Model = churn_mod_names, ROC_AUC = churn_roc_aucs) %>%
+  arrange(-ROC_AUC)
+
+churn_results
+```
+
+
+
+This table tells a very compelling story for our project:
+
+  - The Champion: The Random Forest is our top performer at 0.9095. It successfully combined the strengths of multiple decision trees to capture the complex, non-linear relationships that the simpler models missed.
+  
+  - The Runner Up: KNN followed extremely closely at 0.9069. This confirms that "customer similarity" is a very strong signal in this dataset. However, Random Forest is generally preferred for final deployment because it handles diverse feature types a bit more gracefully.
+  
+  - The Linear Baseline: Logistic Regression and Lasso are neck-and-neck at around 0.848. This is a very respectable score, showing that the "Big Three" predictors (Contract, Tenure, Monthly Charges) carry a lot of the weight even in a simple linear model.
+  
+  
+# Results From The Best Model
+
+Now that the competition between our seven models is over, we have found the winner: Random Forest. Since this model performed best in cross-validation, we can now move forward to see how it handles the final test. Additionally, I'd like to also take a quick look at our K-Nearest Neighbors (KNN) model; although it came in second, its performance (ROC AUC values) is very close to Random Forest, so I think it’s worth seeing if it holds that strength when facing the testing data.
+
+
+## Random Forest: The Champion
+
+Since the above tests showed that the Random Forest model had the best overall performance, we wanted to further explore which version of the forest model performed best. To better understand how the "ensemble" model of Random Forest works, we can imagine hundreds of independent decision trees voting on whether a customer will churn. The model then takes the average of these votes to arrive at the final answer.
+
+
+### The Best Model is...
+
+Random Forest 75! After searching through our tuning grid, it seems that Random Forest model #75 was the most effective configuration. Below, you can see the specific hyperparameters that made this version so successful, along with its mean ROC AUC from the cross-validation folds.
+```{r}
+# Showing the best performing Random Forest configuration
+show_best(churn_rf_tune, metric = "roc_auc") %>% 
+  dplyr::select(-.estimator, .config) %>% 
+  slice(1)
+```
+
+
+With an mtry of 3, 500 trees, and a min_n of 40, this model found the perfect balance between complexity and stability. The higher min_n actually suggests that the model performed better when it was forced to stay a bit simpler and not overfit to tiny groups of customers. Now, it's time to fit this champion to our testing data to discover its true real-world performance.
+
+
+### Final ROC AUC Result
+
+This is the moment of truth. How well does our model #75 actually perform when it encounters customers it has never seen before?
+```{r}
+# Final ROC AUC on the test set
+churn_final_auc <- augment(churn_rf_fit, new_data = churn_test) %>%
+  roc_auc(Churn, .pred_No) %>%
+  dplyr::select(.estimate)
+
+churn_final_auc
+```
+
+
+
+### ROC Curve
+
+To illustrate this result more intuitively, we need to plot the ROC curve. We want the curve to be as close to the top left corner as possible; the closer the curve is to the top left corner, the stronger the model's ability to distinguish between those who stay and those who leave.
+```{r}
+# Plotting the ROC Curve for the final test results
+churn_augmented <- augment(churn_rf_fit, new_data = churn_test)
+
+churn_augmented %>%
+  roc_curve(Churn, .pred_No) %>%
+  autoplot()
+```
+
+
+Looking at the curve, it definitely matches my expectations for a high-performing model. Our curve has a very "steep" start, which means the model is able to identify a large chunk of the "Churners" (True Positives) while making very few mistakes (False Positives).
+
+
+## K-Nearest Neighbors (KNN): The Runner Up
+
+As we decided earlier, we also want to see if our runner-up, KNN, can keep up in the final round. Sometimes a model that looks slightly worse in training actually "generalizes" better to new data.
+
+### The Best KNN is...
+
+Model 10! After evaluating different neighborhood sizes, our tuning process identified KNN Model #10 as the optimal configuration.
+```{r}
+show_best(churn_knn_tune, metric = "roc_auc") %>% 
+  dplyr::select(-.estimator, .config) %>% 
+  slice(1)
+```
+
+
+The best model used 30 neighbors to make its classifications. This relatively high number of neighbors suggests that the model needed a broader "consensus" to accurately predict churn, helping it ignore local noise and outliers in the customer data.
+
+
+### ROC AUC Result
+
+Now, we apply this optimized KNN model to our testing set to see its true predictive power on unseen data.
+```{r}
+churn_knn_final_auc <- augment(churn_knn_fit, new_data = churn_test) %>%
+  roc_auc(Churn, .pred_No) %>%
+  dplyr::select(.estimate)
+
+churn_knn_final_auc
+```
+
+
+The KNN model achieved a final ROC AUC of approximately 0.815. While this is indeed an excellent result, demonstrating that distance-based similarity is an effective predictor of customer churn, but still, its performance is slightly inferior to our Random Forest model(with a final ROC AUC of 0.844). Therefore, this confirms that while "neighbor" behavior is important, the complex, tree-based logic of the Random Forest model can capture more subtle differences in the dataset.
+
+
+### ROC Curve
+
+The ROC curve for our KNN model provides a visual representation of this high performance.
+```{r}
+churn_knn_augmented <- augment(churn_knn_fit, new_data = churn_test)
+
+churn_knn_augmented %>%
+  roc_curve(Churn, .pred_No) %>%
+  autoplot()
+```
+
+
+The curve shows a smooth, confident arc toward the top-left. It matches my expectations perfectly; the smooth nature of the curve reflects the "voting" process of the 30 neighbors. It demonstrates that the model is very capable of distinguishing between churners and non-churners, maintaining a high true positive rate while keeping false alarms relatively low.
+
+
+## Why the Random Forest Still Wins
+
+Even though the KNN score is likely very close, the Random Forest stays our champion.
+
+
+The reason is likely its stability. Because KNN is a "lazy learner," it only focuses on its nearest neighbors. If there are outliers in the test set, KNN is easily affected. However, Random Forest is an ensemble learning method. Because it averages the results of 500 different decision trees, it is much harder to be "fooled."
+
+
+In our case, the Random Forest's ability to handle the categorical variables (like the "Contract" types) more naturally gives it that slight edge over the distance-based logic of KNN.
+
+
+# Putting the Model to the Test
+
+We finally reach the most interesting part! Since we want to know how effective our machine learning model could be, we are going to move beyond our training and testing tables and put our model to work on real-world scenarios. I will use a recent customer story from telecom industry review site, along with my friend's personal experience, to test whether our model can predict their behavior before they face the decision of whether or not to cancel their service.
+
+
+## Case 1: The "International Student" 
+
+Many of my friends are international students who recently arrived in the US and are currently freshmen. One of them is a girl who lives off-campus. To meet her needs for studying and gaming, she got fiber optic internet. However, since she's going home for summer vacation, she opted for a monthly plan, which costs a whopping $86.24 per month. Although she shares the cost with her other roommate, she told me that she still thinks the cost is too high, so she is actively looking for a better deal and will definitely switch the provider once she finds one.
+
+
+Let's see if our model recognizes her as a high-risk churn candidate.
+```{r}
+student_churn_test <- data.frame(
+  gender = "Female",
+  SeniorCitizen = 0,
+  Partner = "Yes", # She lives with her roommate
+  Dependents = "Yes",
+  tenure = 12, # This is her first year
+  PhoneService = "Yes",
+  MultipleLines = "No",
+  InternetService = "Fiber optic",
+  OnlineSecurity = "No",
+  OnlineBackup = "No",
+  DeviceProtection = "No",
+  TechSupport = "No",
+  StreamingTV = "Yes",
+  StreamingMovies = "No",
+  Contract = "Month-to-month", 
+  PaperlessBilling = "Yes",
+  PaymentMethod = "Electronic check",
+  MonthlyCharges = 86.24,
+  TotalCharges = 1034.88 
+)
+
+predict(churn_rf_fit, student_churn_test, type = "class")
+```
+
+
+Yay! The model correctly predicts the churn. This makes total sense; without a long-term contract or a family bundle to keep her tied to the provider, a student paying a high monthly bill is likely to switch to a cheaper competitor or cancel their subscription at the end of the school year.
+
+
+## Case 2: The "Retention Save"
+
+Our second case comes from a popular discussion on the r/Spectrum subreddit. A user named atlredneck shared their story of almost leaving when their bill spiked. Instead of canceling, they called the "Retention Department" and signed a new Two-year price lock (Contract) to get the price back down.
+
+
+  - Source: [Reddit - r/Spectrum - "Called retention and got a good deal I think?"](https://www.reddit.com/r/Spectrum/comments/1oew4gv/called_retention_and_got_a_good_deal_i_think/)
+  
+  
+Let's see if the model recognizes that this contract "locks" the customer in.
+```{r}
+reddit_test <- data.frame(
+  gender = "Male",
+  SeniorCitizen = 0,
+  Partner = "No",
+  Dependents = "No",
+  tenure = 24, 
+  PhoneService = "Yes",
+  MultipleLines = "No",
+  InternetService = "Fiber optic",
+  OnlineSecurity = "No",
+  OnlineBackup = "No",
+  DeviceProtection = "No",
+  TechSupport = "No",
+  StreamingTV = "No",
+  StreamingMovies = "No",
+  Contract = "Two year", # The key "Retention" move
+  PaperlessBilling = "Yes",
+  PaymentMethod = "Credit card (automatic)",
+  MonthlyCharges = 60.00, 
+  TotalCharges = 1440.00 
+)
+
+predict(churn_rf_fit, reddit_test, type = "class")
+```
+
+Success! The model predicts this customer will Stay. Success! The model predicts this customer will Stay. This highlights that even if a customer is frustrated, the security of a Two-year contract and a lower monthly bill are the most effective tools a company has to prevent someone from leaving.
+
+
+# Conclusion
+
+After a series of data explorations, model tuning, and practical tests, this project successfully developed a customer churn prediction framework. In this project, we evaluated seven different machine learning architectures, ranging from simple linear models (such as logistic regression) to more complex ensemble techniques. The Random Forest model performed particularly well, slightly outperforming the K-Nearest Neighbors model and other models in terms of accuracy (ROC AUC). Further testing showed that the Random Forest 75 model performed best, achieving a satisfactory ROC AUC of 0.847 on the training set and 0.844 on the testing set. This demonstrates its effectiveness in handling complex consumer behavior, likely to predict customer churn. One of the most insightful findings I discovered during model tuning was the "mtry" tradeoff; I found that limiting the number of randomly selected predictors can actually enhance the model by reducing the correlation between trees, enabling it to capture subtle churn signals that simpler models like LDA or decision trees might miss. Finally, by testing the model in real-world scenarios, including high-risk “international student” personal experiences and “Reddit user retention” cases, we further validated that our model is not just a mathematical exercise, but a practical tool capable of identifying high-risk customers with over 80% accuracy.
+
+
+Regarding future improvements, I feel this project is currently in a relatively conventional stage. It actually has endless potential for more interesting applications. For example, if given the opportunity, I'd like to try more advanced Neural Networks, allowing the model to process data like a brain learns. While this would certainly require more computing power, it also means that such an algorithm would likely be much smarter than the current one. Additionally, since we're currently only using numerical and categorical data, if we could incorporate the "textual content" of negative customer reviews (e.g., text analysis?), the model could understand/learn customer sentiments, leading to more accurate predictions of customer behavior. Overall, this project has given me a completely new understanding of machine learning. Previously, I thought data was cold and impersonal, but now I realize that with the right model, we can glean customer stories from this data, even anticipating how to retain customers before they leave. By utilizing machine learning, I feel like I've become a semi-prophet, which is very rewarding.
+
+![](/Users/User/OneDrive/Desktop/Final Project/Images/customer_satisfaction_770_450-01.jpg)
+
